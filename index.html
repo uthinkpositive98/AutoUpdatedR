@@ -767,7 +767,8 @@ searchInput.addEventListener('input', function() {
   const val = this.value.trim();
   clearBtn.style.display = val ? 'block' : 'none';
   if (val.length < 1) { acList.style.display = 'none'; return; }
-  const matches = PATIENTS.filter(p => p.name.includes(val)).slice(0, 8);
+  const valLower = val.toLowerCase();
+  const matches = PATIENTS.filter(p => p.name.toLowerCase().includes(valLower)).slice(0, 8);
   if (!matches.length) { acList.style.display = 'none'; return; }
   acSelected = -1;
   acList.innerHTML = matches.map((p, i) => {
@@ -786,7 +787,7 @@ searchInput.addEventListener('input', function() {
 });
 
 function highlight(text, q) {
-  const i = text.indexOf(q);
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
   if (i < 0) return text;
   return text.slice(0,i) + `<mark style="background:#ccfbf1;color:#0f766e;border-radius:3px;padding:0 2px">${text.slice(i, i+q.length)}</mark>` + text.slice(i+q.length);
 }
@@ -826,7 +827,7 @@ function doSearch() {
   acList.style.display = 'none';
   const q = searchInput.value.trim();
   if (!q) return;
-  const matches = PATIENTS.filter(p => p.name.includes(q));
+  const matches = PATIENTS.filter(p => p.name.toLowerCase().includes(q.toLowerCase()));
   const area = document.getElementById('resultArea');
   if (!matches.length) {
     area.innerHTML = `<div class="no-result"><div class="no-result-icon">🔍</div><h3>ไม่พบข้อมูลผู้ป่วย</h3><p>ลองใช้ชื่อหรือนามสกุลอื่น</p></div>`;
