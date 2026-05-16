@@ -140,6 +140,19 @@
     <h1>ระบบค้นหาเวชระเบียน</h1>
     <p>ค้นหาข้อมูลผู้ป่วยและรูปลายมือแพทย์</p>
   </div>
+  <div style="display:flex;align-items:center;gap:8px;margin-left:18px;flex-shrink:0;">
+    <input type="text" id="headerNameInput" placeholder="ชื่อผู้ป่วย..." autocomplete="off"
+      style="padding:8px 14px;border:2px solid rgba(255,255,255,0.35);border-radius:10px;background:rgba(255,255,255,0.15);color:white;font-family:inherit;font-size:14px;outline:none;width:180px;"
+      onfocus="this.style.borderColor='rgba(255,255,255,0.7)';this.style.background='rgba(255,255,255,0.22)'"
+      onblur="this.style.borderColor='rgba(255,255,255,0.35)';this.style.background='rgba(255,255,255,0.15)'"
+      onkeydown="if(event.key==='Enter')headerSearch()"
+    >
+    <button onclick="headerSearch()"
+      style="padding:8px 16px;background:rgba(255,255,255,0.95);color:#0f766e;border:none;border-radius:10px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap;transition:all 0.15s;"
+      onmouseover="this.style.background='white';this.style.transform='translateY(-1px)'"
+      onmouseout="this.style.background='rgba(255,255,255,0.95)';this.style.transform='none'"
+    >📅 หานัด</button>
+  </div>
   <div class="header-actions">
     <div class="header-badge" id="totalBadge">— ราย</div>
     <button class="hbtn hbtn-confirm disabled" id="confirmBtn" onclick="openConfirmModal()" style="display:none">
@@ -930,6 +943,140 @@ function openImg(filename) {
 
 function openDriveFolder() {
   window.open(`https://drive.google.com/drive/folders/${FOLDER_ID}`, '_blank');
+}
+
+// ====================== APPOINTMENT SEARCH ======================
+const SCHEDULE_SHEET_ID = '1FkEZ5OgkfCiJyyCkpiiGI2IWz6-5cOKVX47H1g0IJRk';
+
+function headerSearch() {
+  const name = document.getElementById('headerNameInput').value.trim();
+  if (!name) return;
+  showApptModal(name);
+}
+
+function showApptModal(patientName) {
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = `
+    <div class="modal-backdrop" id="apptBackdrop" onclick="if(event.target===this)closeApptModal()">
+      <div class="modal" style="max-width:600px">
+        <h2>📅 ค้นหานัด</h2>
+        <div class="modal-sub">กำลังค้นหา "<strong>${patientName}</strong>" ในตารางนัดทั้งหมด...</div>
+        <div id="apptResult" style="margin-top:12px">
+          <div style="text-align:center;padding:40px 0">
+            <div class="img-spinner" style="margin:0 auto 12px;width:32px;height:32px;border-width:4px"></div>
+            <div style="color:#64748b;font-size:14px">กำลังโหลดข้อมูลจาก Google Sheets...</div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="mbtn mbtn-cancel" onclick="closeApptModal()">ปิด</button>
+        </div>
+      </div>
+    </div>`;
+  searchAppointments(patientName);
+}
+
+function closeApptModal() {
+  document.getElementById('modalRoot').innerHTML = '';
+}
+
+async function searchAppointments(patientName) {
+  const resultEl = document.getElementById('apptResult');
+  try {
+    // 1. get all sheet names
+    const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SCHEDULE_SHEET_ID}?key=${API_KEY}&fields=sheets.properties`;
+    const metaRes = await fetch(metaUrl);
+    if (!metaRes.ok) throw new Error('ไม่สามารถเชื่อมต่อ Google Sheets ได้ (ตรวจสอบ API Key)');
+    const meta = await metaRes.json();
+    const sheets = meta.sheets || [];
+
+    // 2. batch get all sheets
+    const ranges = sheets.map(s => encodeURIComponent(`'${s.properties.title}'`)).join('&ranges=');
+    const dataUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SCHEDULE_SHEET_ID}/values:batchGet?key=${API_KEY}&ranges=${ranges}`;
+    const dataRes = await fetch(dataUrl);
+    if (!dataRes.ok) throw new Error('ดึงข้อมูลชีทไม่ได้');
+    const data = await dataRes.json();
+
+    // 3. parse each sheet for appointments
+    const found = [];
+    const nameLower = patientName.toLowerCase().replace(/\s+/g,'');
+
+    for (const vr of (data.valueRanges || [])) {
+      const rows = vr.values || [];
+      // Find date headers row (row with day columns like 12-May, 13-May...)
+      // and time column (first col like 09:00, 09:30...)
+      // Layout: row 3 = dates (วันที่/เวลานัด | 12-May | 13-May ...)
+      //         row 4 = day names
+      //         row 5 = doctor names
+      //         row 6+ = time | patient data per column
+
+      let dateRow = -1, firstDataRow = -1;
+      let dates = []; // index -> date string
+
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        if (!row) continue;
+        // detect date header row: cell[0] contains 'วันที่' or cell[1] looks like a date
+        if (row[0] && (row[0].includes('วันที่') || row[0].includes('สัปดาห์'))) {
+          if (row[1] && /\d+-[A-Za-z]+-?\d*/.test(row[1])) {
+            dateRow = r;
+            dates = row.slice(1); // col 1..7 = Mon-Sun dates
+            firstDataRow = r + 3; // skip day names + doctor row
+            break;
+          }
+        }
+      }
+
+      if (dateRow === -1) continue;
+
+      // scan data rows
+      for (let r = firstDataRow; r < rows.length; r++) {
+        const row = rows[r];
+        if (!row || row.length < 2) continue;
+        const timeCell = row[0]; // e.g. "09:00"
+        if (!timeCell || !/^\d{1,2}:\d{2}/.test(timeCell)) continue;
+
+        for (let c = 1; c < row.length; c++) {
+          const cell = row[c];
+          if (!cell) continue;
+          const cellClean = cell.toLowerCase().replace(/\s+/g,'');
+          if (cellClean.includes(nameLower)) {
+            const dateStr = dates[c-1] || '?';
+            found.push({ date: dateStr, time: timeCell, detail: cell.trim() });
+          }
+        }
+      }
+    }
+
+    // 4. display results
+    if (found.length === 0) {
+      resultEl.innerHTML = `
+        <div style="text-align:center;padding:32px 0;color:#64748b">
+          <div style="font-size:40px;margin-bottom:10px;opacity:0.5">🔍</div>
+          <div style="font-weight:600;color:#1e293b;margin-bottom:6px">ไม่พบนัดของ "${patientName}"</div>
+          <div style="font-size:13px">ลองพิมพ์ชื่อย่อ หรือตรวจสอบการสะกด</div>
+        </div>`;
+    } else {
+      // sort by date
+      const rows = found.map(f => `
+        <div style="display:flex;align-items:flex-start;gap:14px;padding:12px 14px;border-bottom:1px solid #f1f5f9;font-size:14px">
+          <div style="min-width:80px;background:#ccfbf1;color:#0f766e;border-radius:8px;padding:6px 10px;text-align:center;font-weight:600;font-size:13px;flex-shrink:0">${f.date}</div>
+          <div style="min-width:52px;color:#0f766e;font-weight:700;font-size:15px;padding-top:4px">${f.time}</div>
+          <div style="flex:1;color:#1e293b;line-height:1.5;padding-top:4px">${f.detail}</div>
+        </div>`).join('');
+      resultEl.innerHTML = `
+        <div style="background:#f0fdf9;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#0f766e;font-weight:600">
+          พบ ${found.length} นัด สำหรับ "${patientName}"
+        </div>
+        <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;max-height:400px;overflow-y:auto">
+          ${rows}
+        </div>`;
+    }
+  } catch(e) {
+    resultEl.innerHTML = `
+      <div style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;padding:14px;border-radius:10px;font-size:13px">
+        ❌ เกิดข้อผิดพลาด: ${e.message}
+      </div>`;
+  }
 }
 
 // ====================== INIT ======================
