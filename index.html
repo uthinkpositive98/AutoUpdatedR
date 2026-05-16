@@ -996,54 +996,64 @@ async function searchAppointments(patientName) {
     if (!dataRes.ok) throw new Error('ดึงข้อมูลชีทไม่ได้');
     const data = await dataRes.json();
 
-    // 3. parse each sheet for appointments
     const found = [];
     const nameLower = patientName.toLowerCase().replace(/\s+/g,'');
 
     for (const vr of (data.valueRanges || [])) {
       const rows = vr.values || [];
-      // Find date headers row (row with day columns like 12-May, 13-May...)
-      // and time column (first col like 09:00, 09:30...)
-      // Layout: row 3 = dates (วันที่/เวลานัด | 12-May | 13-May ...)
-      //         row 4 = day names
-      //         row 5 = doctor names
-      //         row 6+ = time | patient data per column
 
-      let dateRow = -1, firstDataRow = -1;
-      let dates = []; // index -> date string
-
-      for (let r = 0; r < rows.length; r++) {
+      // วนหา date header blocks หลายรอบในชีทเดียว
+      // แต่ละ block เริ่มด้วยแถวที่มี "วันที่/เวลานัด" | "12-May" | "13-May" ...
+      let r = 0;
+      while (r < rows.length) {
         const row = rows[r];
-        if (!row) continue;
-        // detect date header row: cell[0] contains 'วันที่' or cell[1] looks like a date
-        if (row[0] && (row[0].includes('วันที่') || row[0].includes('สัปดาห์'))) {
-          if (row[1] && /\d+-[A-Za-z]+-?\d*/.test(row[1])) {
-            dateRow = r;
-            dates = row.slice(1); // col 1..7 = Mon-Sun dates
-            firstDataRow = r + 3; // skip day names + doctor row
-            break;
-          }
-        }
-      }
 
-      if (dateRow === -1) continue;
+        // ตรวจหา date header row
+        const isDateRow = row && row[0] && row[0].includes('วันที่') &&
+                          row[1] && /\d+-[A-Za-z]/.test(row[1]);
 
-      // scan data rows
-      for (let r = firstDataRow; r < rows.length; r++) {
-        const row = rows[r];
-        if (!row || row.length < 2) continue;
-        const timeCell = row[0]; // e.g. "09:00"
-        if (!timeCell || !/^\d{1,2}:\d{2}/.test(timeCell)) continue;
+        if (!isDateRow) { r++; continue; }
 
+        // เก็บ date mapping: colIndex -> dateString
+        const dateMap = {};
         for (let c = 1; c < row.length; c++) {
-          const cell = row[c];
-          if (!cell) continue;
-          const cellClean = cell.toLowerCase().replace(/\s+/g,'');
-          if (cellClean.includes(nameLower)) {
-            const dateStr = dates[c-1] || '?';
-            found.push({ date: dateStr, time: timeCell, detail: cell.trim() });
+          if (row[c] && /\d+-[A-Za-z]/.test(row[c])) {
+            dateMap[c] = row[c];
           }
         }
+
+        // skip 2 แถว (วันในสัปดาห์ + ชื่อหมอ) แล้วเริ่มสแกนข้อมูล
+        let dataR = r + 3;
+        while (dataR < rows.length) {
+          const dataRow = rows[dataR];
+          if (!dataRow) { dataR++; continue; }
+
+          // ถ้าเจอ date header ใหม่ หยุด block นี้
+          if (dataRow[0] && dataRow[0].includes('วันที่') && dataRow[1] && /\d+-[A-Za-z]/.test(dataRow[1])) break;
+
+          const timeCell = dataRow[0];
+          // ตรวจว่าเป็นแถวเวลา
+          if (timeCell && /^\d{1,2}:\d{2}/.test(timeCell)) {
+            for (let c = 1; c < dataRow.length; c++) {
+              const cell = dataRow[c];
+              if (!cell) continue;
+              const cellClean = cell.toLowerCase().replace(/\s+/g,'');
+              if (cellClean.includes(nameLower)) {
+                // หา date จาก dateMap — ใช้ column ที่ใกล้ที่สุด
+                let dateStr = dateMap[c];
+                if (!dateStr) {
+                  // ถ้าไม่ตรง column ให้หาที่ใกล้ที่สุด
+                  const cols = Object.keys(dateMap).map(Number).sort((a,b)=>a-b);
+                  const closest = cols.reduce((prev, cur) => Math.abs(cur-c) < Math.abs(prev-c) ? cur : prev, cols[0]);
+                  dateStr = dateMap[closest] || '?';
+                }
+                found.push({ date: dateStr, time: timeCell, detail: cell.trim() });
+              }
+            }
+          }
+          dataR++;
+        }
+        r = dataR; // ต่อจาก block นี้
       }
     }
 
