@@ -1,0 +1,78 @@
+name: 🦷 Auto-update patients.json
+
+on:
+  schedule:
+    # 08:08 UTC  =  15:08 เวลาไทย
+    - cron: '8 8 * * *'
+  workflow_dispatch:   # กดรันมือได้ทันทีจาก GitHub เพื่อทดสอบ
+
+jobs:
+  update-patients:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ☁️ Download dental_records.db from Google Drive
+        run: |
+          pip install gdown --quiet
+          gdown "1rA_ochfv79sSW-zGV0kgkRcu7g-vYpHu" -O dental_records.db
+          echo "Downloaded: $(du -sh dental_records.db | cut -f1)"
+
+      - name: 🔄 Extract patients → patients.json
+        run: |
+          python3 - <<'EOF'
+          import sqlite3, json, sys
+
+          try:
+              conn = sqlite3.connect("dental_records.db")
+
+              tables = conn.execute(
+                  "SELECT name FROM sqlite_master WHERE type='table' AND name='patients'"
+              ).fetchall()
+              if not tables:
+                  print("❌ ไม่พบ table 'patients' ในไฟล์ — หยุดการทำงาน")
+                  sys.exit(1)
+
+              rows = conn.execute(
+                  "SELECT id, name, phone FROM patients ORDER BY id"
+              ).fetchall()
+              conn.close()
+
+              patients = [
+                  {
+                      "id":    r[0],
+                      "name":  " ".join((r[1] or "").split()).strip(),
+                      "phone": (r[2] or "").strip()
+                  }
+                  for r in rows
+                  if (r[1] or "").strip()
+              ]
+
+              with open("patients.json", "w", encoding="utf-8") as f:
+                  json.dump(patients, f, ensure_ascii=False, indent=2)
+
+              print(f"✅ Extracted {len(patients)} patients → patients.json")
+
+          except Exception as e:
+              print(f"❌ Error: {e}")
+              sys.exit(1)
+          EOF
+
+      - name: 📤 Commit & push (if changed)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add patients.json
+
+          if git diff --staged --quiet; then
+            echo "ℹ️ patients.json ไม่มีการเปลี่ยนแปลง — ข้าม commit"
+          else
+            COUNT=$(python3 -c "import json; print(len(json.load(open('patients.json'))))")
+            git commit -m "🤖 Auto-update patients.json · ${COUNT} ราย · $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+            echo "✅ Committed & pushed — Vercel จะ re-deploy ใน ~30-60 วินาที"
+          fi
